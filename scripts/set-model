@@ -1,0 +1,136 @@
+#!/usr/bin/env bash
+# set-model — change FROM line or replace Modelfile, then recreate ollama model inside container
+set -euo pipefail
+
+# Source central config
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+CONFIG="$SCRIPT_DIR/config.sh"
+if [[ -f "$CONFIG" ]]; then
+    # shellcheck source=/dev/null
+    source "$CONFIG"
+else
+    echo "Missing config at $CONFIG" >&2
+    exit 1
+fi
+
+# Local overrides
+FILE=""
+MODEL_SPEC=""
+
+
+usage() {
+    cat <<EOF
+Usage: $0 [options] [model-spec]
+Options:
+    -f, --file <modelfile>   Replace local Modelfile with given file
+    -c, --container <name>   Docker container name (default: ollama)
+    -n, --name <model>       Ollama model name (default: $MODEL_NAME)
+    -h, --help
+If --file is not used, provide model-spec (e.g. username/model:tag) to replace the first "FROM ..." line in Modelfile.
+EOF
+    exit 1
+}
+
+# parse args (simple)
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        -f|--file) FILE="$2"; shift 2 ;;
+        -c|--container) CONTAINER_NAME="$2"; shift 2 ;;
+        -n|--name) MODEL_NAME="$2"; shift 2 ;;
+        -h|--help) usage ;;
+        --) shift; break ;;
+        -*)
+            echo "Unknown option: $1" >&2
+            usage
+            ;;
+        *)
+            MODEL_SPEC="$1"; shift ;;
+    esac
+done
+
+if [[ -n "$FILE" ]]; then
+    if [[ ! -f "$FILE" ]]; then
+        echo "Specified file does not exist: $FILE" >&2
+        exit 2
+    fi
+    # Read original FROM value and full content (fallback) so we can restore on failure
+    ORIG_EXISTS=0
+    ORIGINAL_FROM=""
+    ORIGINAL_CONTENT=""
+    if [[ -f "$HOST_MODELF" ]]; then
+        ORIG_EXISTS=1
+        # capture the rest of the first FROM line (model spec)
+        ORIGINAL_FROM=$(awk '/^FROM[[:space:]]/ { $1=""; sub(/^ +/, ""); print; exit }' "$HOST_MODELF" || true)
+        ORIGINAL_CONTENT=$(cat "$HOST_MODELF" || true)
+    fi
+
+    cp "$FILE" "$HOST_MODELF"
+    echo "Replaced Modelfile with: $FILE"
+else
+    if [[ -z "$MODEL_SPEC" ]]; then
+        echo "No model specified and no --file given." >&2
+        usage
+    fi
+
+    if [[ -f "$HOST_MODELF" ]]; then
+        # Read original FROM value and full content so we can restore on failure
+        ORIG_EXISTS=1
+        ORIGINAL_FROM=$(awk '/^FROM[[:space:]]/ { $1=""; sub(/^ +/, ""); print; exit }' "$HOST_MODELF" || true)
+        ORIGINAL_CONTENT=$(cat "$HOST_MODELF" || true)
+
+        # replace first line starting with FROM
+        awk -v m="$MODEL_SPEC" 'BEGIN{replaced=0}
+            /^FROM[[:space:]]/ && !replaced { print "FROM " m; replaced=1; next }
+            { print }
+            END{ if(!replaced) print "FROM " m }' "$HOST_MODELF" > "${HOST_MODELF}.tmp" && mv "${HOST_MODELF}.tmp" "$HOST_MODELF"
+        echo "Updated FROM line in Modelfile -> FROM $MODEL_SPEC"
+    else
+        echo "FROM $MODEL_SPEC" > "$HOST_MODELF"
+        echo "Created Modelfile with: FROM $MODEL_SPEC"
+    fi
+fi
+
+# Setup rollback: if anything after this point fails, restore the original Modelfile
+success=0
+rollback() {
+    local ret=$?
+    if [[ "${success:-0}" -ne 1 ]]; then
+        echo "Model creation failed — rolling back Modelfile..."
+        if [[ "${ORIG_EXISTS:-0}" -eq 1 && -n "${ORIGINAL_CONTENT:-}" ]]; then
+            printf "%s" "$ORIGINAL_CONTENT" > "$HOST_MODELF" && echo "Restored original Modelfile content"
+        else
+            # original didn't exist, remove created file
+            rm -f "$HOST_MODELF" && echo "Removed Modelfile created during failed attempt"
+        fi
+    fi
+    exit "$ret"
+}
+trap 'rollback' EXIT
+
+# Ensure container exists
+if ! docker ps -a --format '{{.Names}}' | grep -qx "$CONTAINER_NAME"; then
+    echo "Container '$CONTAINER_NAME' not found. Aborting." >&2
+    exit 3
+fi
+
+# Ensure we run 'ollama create' in the directory that contains the Modelfile inside the container
+CONTAINER_MODELF_DIR="$(dirname "$CONTAINER_MODELF")"
+
+# Try to stop the model, ignore errors
+echo "Stopping model '$MODEL_NAME' (if running) inside container '$CONTAINER_NAME'..."
+docker exec "$CONTAINER_NAME" sh -c "ollama stop '$MODEL_NAME' 2>/dev/null || true"
+
+# Remove existing model instance to ensure fresh create (ignore errors)
+docker exec "$CONTAINER_NAME" sh -c "ollama rm '$MODEL_NAME' 2>/dev/null || true"
+
+# Create model inside container. Use the repo dir inside the container and Modelfile path.
+echo "Creating model '$MODEL_NAME' inside container '$CONTAINER_NAME' (Modelfile: $CONTAINER_MODELF)..."
+if ! docker exec -w "$CONTAINER_MODELF_DIR" "$CONTAINER_NAME" sh -c "ollama create '$MODEL_NAME'"; then
+    echo "Failed to create model. Verify Modelfile is accessible inside container at $CONTAINER_REPO_DIR and that 'ollama' CLI is available." >&2
+    exit 4
+fi
+echo "Model '$MODEL_NAME' recreated successfully."
+# mark success so trap doesn't roll back
+success=1
+
+echo "Set-model finished successfully."

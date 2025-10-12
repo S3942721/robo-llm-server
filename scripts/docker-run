@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Source central config
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+CONFIG="$SCRIPT_DIR/config.sh"
+if [[ -f "$CONFIG" ]]; then
+	# shellcheck source=/dev/null
+	source "$CONFIG"
+else
+	echo "Missing config at $CONFIG" >&2
+	exit 1
+fi
+
+# remove any existing container named "$CONTAINER_NAME" to avoid name conflicts, then start the container
+docker rm -f "$CONTAINER_NAME" 2>/dev/null || true
+
+# Mount the host repo dir into the container at CONTAINER_REPO_DIR
+docker run -d --gpus=all -v "$HOST_REPO_DIR:$CONTAINER_REPO_DIR" -p 11434:11434 --name "$CONTAINER_NAME" ollama/ollama
