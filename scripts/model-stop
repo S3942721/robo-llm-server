@@ -1,0 +1,47 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+CONFIG="$SCRIPT_DIR/config.sh"
+if [[ -f "$CONFIG" ]]; then
+    # shellcheck source=/dev/null
+    source "$CONFIG"
+else
+    echo "Missing config at $CONFIG" >&2
+    exit 1
+fi
+
+usage(){
+    cat <<EOF
+Usage: $0 [options]
+Options:
+  -n, --name NAME    Model name (default: $MODEL_NAME)
+  -c, --container CN Container name (default: $CONTAINER_NAME)
+  -r, --rm           Also remove model after stopping
+  -h, --help         Show this help
+EOF
+}
+
+MODEL="$MODEL_NAME"
+CONTAINER="$CONTAINER_NAME"
+RM_AFTER=0
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        -n|--name) MODEL="$2"; shift 2 ;;
+        -c|--container) CONTAINER="$2"; shift 2 ;;
+        -r|--rm) RM_AFTER=1; shift ;;
+        -h|--help) usage; exit 0 ;;
+        --) shift; break ;;
+        -*) echo "Unknown option: $1" >&2; usage; exit 1 ;;
+        *) break ;;
+    esac
+done
+
+echo "Stopping model '$MODEL' in container '$CONTAINER'..."
+docker exec "$CONTAINER" sh -c "ollama stop '$MODEL' 2>/dev/null || true"
+
+if [[ "$RM_AFTER" -ne 0 ]]; then
+    echo "Removing model '$MODEL' from container '$CONTAINER'..."
+    docker exec "$CONTAINER" sh -c "ollama rm '$MODEL' 2>/dev/null || true"
+fi

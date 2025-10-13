@@ -11,4 +11,40 @@ else
 	exit 1
 fi
 
-docker exec -it "$CONTAINER_NAME" ollama run "$MODEL_NAME"
+# Default: detached
+DETACH=1
+
+usage(){
+	cat <<EOF
+Usage: $0 [options]
+Options:
+	-a, --attach       Run attached (interactive) instead of detached (default)
+	-n, --name NAME    Override model name (default: $MODEL_NAME)
+	-c, --container CN Override container name (default: $CONTAINER_NAME)
+	-h, --help         Show this help
+EOF
+}
+
+while [[ $# -gt 0 ]]; do
+	case "$1" in
+		-a|--attach) DETACH=0; shift ;;
+		-n|--name) MODEL_NAME="$2"; shift 2 ;;
+		-c|--container) CONTAINER_NAME="$2"; shift 2 ;;
+		-h|--help) usage; exit 0 ;;
+		--) shift; break ;;
+		-*) echo "Unknown option: $1" >&2; usage; exit 1 ;;
+		*) break ;;
+	esac
+done
+
+if [[ "$DETACH" -ne 0 ]]; then
+	echo "Starting model '$MODEL_NAME' detached in container '$CONTAINER_NAME'..."
+	# run in background inside container
+	docker exec -d "$CONTAINER_NAME" sh -c "ollama run '$MODEL_NAME'" || {
+		echo "Failed to start model detached" >&2; exit 2
+	}
+	echo "Model '$MODEL_NAME' started (detached). Use scripts/model-attach to attach or scripts/model-stop to stop."
+else
+	echo "Starting model '$MODEL_NAME' attached in container '$CONTAINER_NAME'..."
+	docker exec -it "$CONTAINER_NAME" ollama run "$MODEL_NAME"
+fi
