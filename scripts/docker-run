@@ -16,4 +16,11 @@ fi
 docker rm -f "$CONTAINER_NAME" 2>/dev/null || true
 
 # Mount the host repo dir into the container at CONTAINER_REPO_DIR
-docker run -d --gpus=all -v "$HOST_REPO_DIR:$CONTAINER_REPO_DIR" -p 11434:11434 --name "$CONTAINER_NAME" ollama/ollama
+docker run -d --gpus=all \
+	-v "$HOST_REPO_DIR:$CONTAINER_REPO_DIR" \
+	-p 11434:11434 \
+	--name "$CONTAINER_NAME" \
+	-e OLLAMA_KEEP_ALIVE=-1 \
+	-e OLLAMA_MAX_LOADED_MODELS=4 \
+	-e OLLAMA_NUM_PARALLEL=3 \
+	ollama/ollama

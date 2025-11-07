@@ -71,6 +71,18 @@ if [[ "$DETACH" -ne 0 ]]; then
 		echo "Failed to start model detached" >&2; exit 2
 	}
 	echo "Model '$MODEL_NAME' started (detached). Use scripts/model-attach to attach or scripts/model-stop to stop."
+	
+	# Preload the model with a test request
+	echo "Preloading model with test request..."
+	sleep 3  # Give the model a moment to start up
+	
+	if curl -s -o /dev/null -w "%{http_code}" http://localhost:11434/api/generate \
+		-H "Content-Type: application/json" \
+		-d "{\"model\":\"$MODEL_NAME\",\"prompt\":\"Hello World\",\"stream\":false}" | grep -q "200"; then
+		echo "Model preloaded successfully!"
+	else
+		echo "Warning: Failed to preload model (API may not be ready yet)" >&2
+	fi
 else
 	echo "Starting model '$MODEL_NAME' attached in container '$CONTAINER_NAME'..."
 	docker exec -it "$CONTAINER_NAME" ollama run "$MODEL_NAME"
