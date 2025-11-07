@@ -37,9 +37,36 @@ while [[ $# -gt 0 ]]; do
 	esac
 done
 
+# Check if model exists in the container, create if missing
+# Note: Model names in ollama are case-sensitive, so we use exact matching
+echo "Checking if model '$MODEL_NAME' exists in container '$CONTAINER_NAME'..."
+if ! docker exec "$CONTAINER_NAME" ollama list 2>/dev/null | awk '{print $1}' | grep -qx "$MODEL_NAME"; then
+	echo "Model '$MODEL_NAME' not found. Available models:"
+	docker exec "$CONTAINER_NAME" ollama list 2>/dev/null || echo "  (Unable to list models)"
+	
+	# Verify Modelfile exists in container
+	echo "Verifying Modelfile at $CONTAINER_MODELF..."
+	if ! docker exec "$CONTAINER_NAME" test -f "$CONTAINER_MODELF"; then
+		echo "ERROR: Modelfile not found at $CONTAINER_MODELF inside container" >&2
+		echo "Host Modelfile location: $HOST_MODELF" >&2
+		echo "Please ensure the Modelfile exists and the volume mount is correct" >&2
+		exit 4
+	fi
+	
+	echo "Creating model '$MODEL_NAME' from $CONTAINER_MODELF..."
+	if ! docker exec "$CONTAINER_NAME" ollama create "$MODEL_NAME" -f "$CONTAINER_MODELF"; then
+		echo "Failed to create model '$MODEL_NAME'" >&2
+		echo "Attempting to show Modelfile content:" >&2
+		docker exec "$CONTAINER_NAME" head -20 "$CONTAINER_MODELF" 2>/dev/null || echo "  (Unable to read Modelfile)" >&2
+		exit 3
+	fi
+	echo "Model '$MODEL_NAME' created successfully!"
+else
+	echo "Model '$MODEL_NAME' found in container."
+fi
+
 if [[ "$DETACH" -ne 0 ]]; then
 	echo "Starting model '$MODEL_NAME' detached in container '$CONTAINER_NAME'..."
-	# run in background inside container
 	docker exec -d "$CONTAINER_NAME" sh -c "ollama run '$MODEL_NAME'" || {
 		echo "Failed to start model detached" >&2; exit 2
 	}

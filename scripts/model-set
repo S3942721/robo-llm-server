@@ -113,6 +113,29 @@ if ! docker ps -a --format '{{.Names}}' | grep -qx "$CONTAINER_NAME"; then
     exit 3
 fi
 
+# Verify container is running
+if ! docker ps --format '{{.Names}}' | grep -qx "$CONTAINER_NAME"; then
+    echo "Container '$CONTAINER_NAME' exists but is not running. Starting it..." >&2
+    docker start "$CONTAINER_NAME" || {
+        echo "Failed to start container '$CONTAINER_NAME'" >&2
+        exit 5
+    }
+    # Give ollama service time to start
+    echo "Waiting for ollama service to be ready..."
+    sleep 3
+fi
+
+# Verify Modelfile exists in container
+echo "Verifying Modelfile at $CONTAINER_MODELF..."
+if ! docker exec "$CONTAINER_NAME" test -f "$CONTAINER_MODELF"; then
+    echo "ERROR: Modelfile not found at $CONTAINER_MODELF inside container" >&2
+    echo "Host Modelfile location: $HOST_MODELF" >&2
+    echo "Container repo directory: $CONTAINER_REPO_DIR" >&2
+    echo "Checking what files exist in container..." >&2
+    docker exec "$CONTAINER_NAME" ls -la "$CONTAINER_REPO_DIR/models/modelfiles/" 2>/dev/null || echo "  (Directory not accessible)" >&2
+    exit 6
+fi
+
 # Ensure we run 'ollama create' in the directory that contains the Modelfile inside the container
 CONTAINER_MODELF_DIR="$(dirname "$CONTAINER_MODELF")"
 
@@ -121,12 +144,19 @@ echo "Stopping model '$MODEL_NAME' (if running) inside container '$CONTAINER_NAM
 docker exec "$CONTAINER_NAME" sh -c "ollama stop '$MODEL_NAME' 2>/dev/null || true"
 
 # Remove existing model instance to ensure fresh create (ignore errors)
+echo "Removing existing model '$MODEL_NAME' (if present)..."
 docker exec "$CONTAINER_NAME" sh -c "ollama rm '$MODEL_NAME' 2>/dev/null || true"
 
 # Create model inside container. Use the repo dir inside the container and Modelfile path.
 echo "Creating model '$MODEL_NAME' inside container '$CONTAINER_NAME' (Modelfile: $CONTAINER_MODELF)..."
-if ! docker exec -w "$CONTAINER_MODELF_DIR" "$CONTAINER_NAME" sh -c "ollama create '$MODEL_NAME'"; then
-    echo "Failed to create model. Verify Modelfile is accessible inside container at $CONTAINER_REPO_DIR and that 'ollama' CLI is available." >&2
+echo "Working directory: $CONTAINER_MODELF_DIR"
+if ! docker exec -w "$CONTAINER_MODELF_DIR" "$CONTAINER_NAME" sh -c "ollama create '$MODEL_NAME' -f '$CONTAINER_MODELF'"; then
+    echo "Failed to create model. Debugging information:" >&2
+    echo "  Container: $CONTAINER_NAME" >&2
+    echo "  Modelfile (container): $CONTAINER_MODELF" >&2
+    echo "  Modelfile (host): $HOST_MODELF" >&2
+    echo "Attempting to show first 30 lines of Modelfile:" >&2
+    docker exec "$CONTAINER_NAME" head -30 "$CONTAINER_MODELF" 2>/dev/null || echo "  (Unable to read Modelfile)" >&2
     exit 4
 fi
 echo "Model '$MODEL_NAME' recreated successfully."
